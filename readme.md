@@ -7,6 +7,6 @@ options:
 4. `-o`: output path
 
 ```text
-> java -jar picc-1.0-SNAPSHOT.jar -k 1 -i ~/pics/ -o ~/compressed/ -k key1,key2 -c 20
+> java -jar picc-1.0-SNAPSHOT.jar -i ~/pics/ -o ~/compressed/ -k key1,key2 -c 20
 done! 12 MB => 4 MB
 ```
