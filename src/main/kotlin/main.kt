@@ -1,17 +1,14 @@
 import com.drew.imaging.jpeg.JpegMetadataReader
-import com.drew.metadata.Directory
-import com.drew.metadata.exif.ExifIFD0Descriptor
-import com.drew.metadata.exif.ExifIFD0Directory
 import com.drew.metadata.exif.ExifSubIFDDirectory
 import com.jayway.jsonpath.JsonPath
 import java.io.File
-import java.lang.Error
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Files
 import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.BasicFileAttributeView
 import java.nio.file.attribute.BasicFileAttributes
 import java.time.Duration
@@ -31,6 +28,7 @@ fun main(args: Array<String>) {
         opts["-o"],
         opts["-c"]?.toInt() ?: 100,
         opts["-C"].toBoolean(),
+        opts["-K"].toBoolean(),
     )
 }
 
@@ -39,7 +37,8 @@ fun compress(
     inputPath: String?,
     outputPath: String?,
     threadPoolSize: Int,
-    classifyByDate: Boolean
+    classifyByDate: Boolean,
+    copyIfFailed: Boolean
 ) {
     if (keys.isNullOrEmpty()) {
         System.err.println("key can't be null")
@@ -65,7 +64,7 @@ fun compress(
         executor.submit {
             try {
                 originalSize.addAndGet(Files.size(it.toPath()))
-                val size = compressOne(keys.random(), it, outputPath, classifyByDate)
+                val size = compressOne(keys.random(), it, outputPath, classifyByDate, copyIfFailed)
                 outputSize.addAndGet(size)
             } catch (e: Exception) {
                 println(it.absolutePath)
@@ -79,23 +78,43 @@ fun compress(
 }
 
 
-fun compressOne(key: String, inputFile: File, outputPath: String, classifyByDate: Boolean): Long {
+fun compressOne(
+    key: String,
+    inputFile: File,
+    outputPath: String,
+    classifyByDate: Boolean,
+    copyIfFailed: Boolean
+): Long {
     var targetFilePath = Paths.get(outputPath, "c_${inputFile.name}").toString()
     val attrs = Files.readAttributes(inputFile.toPath(), BasicFileAttributes::class.java)
     val captureDate = getCaptureDate(inputFile)
     if (classifyByDate && captureDate != null) {
         try {
             val localDate = captureDate.toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
-            val folder = Paths.get(outputPath, localDate.year.toString(), localDate.month.value.toString().padStart(2, '0'))
+            val folder =
+                Paths.get(outputPath, localDate.year.toString(), localDate.month.value.toString().padStart(2, '0'))
             Files.createDirectories(folder)
             targetFilePath = Paths.get(folder.toString(), "c_${inputFile.name}").toString()
         } catch (e: Exception) {
             e.printStackTrace()
+            throw e
         }
     }
-    return shrink(key, inputFile.absolutePath) {
-        copy(key, it, targetFilePath, attrs)
+    val targetFile = File(targetFilePath)
+    if (!(targetFile.exists() && !targetFile.isDirectory)) {
+        try {
+            return shrink(key, inputFile.absolutePath) {
+                copy(key, it, targetFilePath, attrs)
+            }
+        } catch (e: Exception) {
+            if (copyIfFailed) {
+                Files.copy(inputFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            } else {
+                throw e
+            }
+        }
     }
+    return Files.size(targetFile.toPath())
 }
 
 fun shrink(key: String, path: String, cb: (location: String) -> Long): Long {
