@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "io.github.yajw"
-version = "1.0-SNAPSHOT"
+version = "1.1-SNAPSHOT"
 
 repositories {
     mavenCentral()
@@ -14,6 +14,7 @@ repositories {
 dependencies {
     implementation("com.jayway.jsonpath", "json-path", "2.5.0")
     implementation("org.slf4j", "slf4j-simple", "1.7.30")
+    implementation("com.drewnoakes", "metadata-extractor", "2.16.0")
     testImplementation(kotlin("test-junit"))
 }
 

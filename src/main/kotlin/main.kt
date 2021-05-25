@@ -1,24 +1,46 @@
+import com.drew.imaging.jpeg.JpegMetadataReader
+import com.drew.metadata.Directory
+import com.drew.metadata.exif.ExifIFD0Descriptor
+import com.drew.metadata.exif.ExifIFD0Directory
+import com.drew.metadata.exif.ExifSubIFDDirectory
 import com.jayway.jsonpath.JsonPath
 import java.io.File
+import java.lang.Error
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Files
 import java.nio.file.Paths
+import java.nio.file.attribute.BasicFileAttributeView
+import java.nio.file.attribute.BasicFileAttributes
 import java.time.Duration
+import java.time.ZoneId
 import java.util.*
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
+
 
 val httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()
 
 fun main(args: Array<String>) {
     val opts = args.toList().zipWithNext().toMap()
-    compress(opts["-k"]?.split(","), opts["-i"], opts["-o"], opts["-c"]?.toInt() ?: 100)
+    compress(
+        opts["-k"]?.split(","),
+        opts["-i"],
+        opts["-o"],
+        opts["-c"]?.toInt() ?: 100,
+        opts["-C"].toBoolean(),
+    )
 }
 
-fun compress(keys: List<String>?, inputPath: String?, outputPath: String?, threadPoolSize: Int) {
+fun compress(
+    keys: List<String>?,
+    inputPath: String?,
+    outputPath: String?,
+    threadPoolSize: Int,
+    classifyByDate: Boolean
+) {
     if (keys.isNullOrEmpty()) {
         System.err.println("key can't be null")
         return
@@ -43,7 +65,7 @@ fun compress(keys: List<String>?, inputPath: String?, outputPath: String?, threa
         executor.submit {
             try {
                 originalSize.addAndGet(Files.size(it.toPath()))
-                val size = compressOne(keys.random(), it, outputPath)
+                val size = compressOne(keys.random(), it, outputPath, classifyByDate)
                 outputSize.addAndGet(size)
             } catch (e: Exception) {
                 println(it.absolutePath)
@@ -57,10 +79,22 @@ fun compress(keys: List<String>?, inputPath: String?, outputPath: String?, threa
 }
 
 
-fun compressOne(key: String, inputFile: File, outputPath: String): Long {
-    val targetFilePath = Paths.get(outputPath, "c_${inputFile.name}").toString()
+fun compressOne(key: String, inputFile: File, outputPath: String, classifyByDate: Boolean): Long {
+    var targetFilePath = Paths.get(outputPath, "c_${inputFile.name}").toString()
+    val attrs = Files.readAttributes(inputFile.toPath(), BasicFileAttributes::class.java)
+    val captureDate = getCaptureDate(inputFile)
+    if (classifyByDate && captureDate != null) {
+        try {
+            val localDate = captureDate.toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
+            val folder = Paths.get(outputPath, localDate.year.toString(), localDate.month.value.toString().padStart(2, '0'))
+            Files.createDirectories(folder)
+            targetFilePath = Paths.get(folder.toString(), "c_${inputFile.name}").toString()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
     return shrink(key, inputFile.absolutePath) {
-        copy(key, it, targetFilePath)
+        copy(key, it, targetFilePath, attrs)
     }
 }
 
@@ -77,17 +111,30 @@ fun shrink(key: String, path: String, cb: (location: String) -> Long): Long {
     return size
 }
 
-fun copy(key: String, location: String, targetPath: String): Long {
+fun copy(key: String, location: String, targetPath: String, attrs: BasicFileAttributes): Long {
     val path = Paths.get(targetPath)
     val request = HttpRequest.newBuilder()
         .uri(URI.create(location))
-        .headers("Authorization", buildAuth(key))
-        .GET()
+        .header("Authorization", buildAuth(key))
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString("{\"preserve\":[\"copyright\",\"creation\",\"location\"]}"))
         .build()
     httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofFile(path)).join()
+    val targetFileAttrs = Files.getFileAttributeView(path, BasicFileAttributeView::class.java)
+    targetFileAttrs.setTimes(attrs.lastModifiedTime(), attrs.lastAccessTime(), attrs.creationTime())
     return Files.size(path)
 }
 
 fun buildAuth(key: String): String {
     return "Basic ${Base64.getEncoder().encodeToString("api:$key".toByteArray())}"
+}
+
+fun getCaptureDate(jpegFile: File): Date? {
+    try {
+        val metadata = JpegMetadataReader.readMetadata(jpegFile)
+        val d = metadata.getFirstDirectoryOfType(ExifSubIFDDirectory::class.java)
+        return d.getDate(ExifSubIFDDirectory.TAG_DATETIME_ORIGINAL)
+    } catch (e: Exception) {
+        return null
+    }
 }
